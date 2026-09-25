@@ -12,10 +12,9 @@ import { CastlePanel, OutroPanel, TitlePanel } from './Panels';
 import { Clouds, Foreground, Hills, Mountains, Stars, Trees } from './Scenery';
 import Character, { type HeroState } from './Character';
 import Hud from './Hud';
+import SoundToggle from './SoundToggle';
+import { playBlockSound } from '@/lib/sound';
 import { PHASES, skyAt } from '@/lib/timeOfDay';
-
-/** Below this width the game is replaced by a plain readable page. */
-const DESKTOP_QUERY = '(min-width: 1024px)';
 
 /** Scroll speed (px/s) above which the character is considered running. */
 const RUN_THRESHOLD = 25;
@@ -90,8 +89,7 @@ export default function GameWorld() {
   }, []);
 
   useLayoutEffect(() => {
-    // The game only runs on wide screens; narrow screens get MobileWorld.
-    if (!window.matchMedia(DESKTOP_QUERY).matches) return;
+    // TEMP (session only): run the game at every width.
 
     gsap.registerPlugin(ScrollTrigger);
 
@@ -103,6 +101,8 @@ export default function GameWorld() {
 
     let idleTimer: ReturnType<typeof setTimeout>;
     let lastCoinStep = -1;
+    // Blocks already broken; revisiting one stays silent, like the block itself.
+    const struck = new Set<string>();
 
     const ctx = gsap.context(() => {
       const track = trackRef.current;
@@ -227,6 +227,11 @@ export default function GameWorld() {
               break;
             }
           }
+          // Chime only the first time each block is broken.
+          if (hit && !struck.has(hit)) {
+            struck.add(hit);
+            playBlockSound();
+          }
           setActiveProject((prev) => (prev === hit ? prev : hit));
 
           // Run cycle follows scroll velocity and direction.
@@ -278,7 +283,7 @@ export default function GameWorld() {
   return (
     <div
       ref={containerRef}
-      className="crt sky relative hidden h-screen w-full overflow-hidden lg:block"
+      className="crt sky relative block h-screen w-full overflow-hidden"
     >
       {/* Everything inside the camera shakes together on impact. */}
       <div ref={cameraRef} className="absolute inset-0">
@@ -342,6 +347,7 @@ export default function GameWorld() {
       </div>
 
       <Hud progress={progress} world={level.world} title={level.title} phase={phase} />
+      <SoundToggle />
 
       {/* progress bar along the very bottom */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-40 h-2.5 bg-black/35">
