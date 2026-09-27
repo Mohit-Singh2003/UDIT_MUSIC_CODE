@@ -1,58 +1,34 @@
 /**
- * 8-bit audio, synthesised with the Web Audio API — no audio files.
+ * Site audio, via the Web Audio API.
  *
- * The music is an original chiptune loop (square-wave lead, triangle bass),
- * written for this site in the spirit of classic platformers. The block sound
- * is an original rising "item" arpeggio.
+ * Music is the MP3 at MUSIC_URL, decoded once and looped with an
+ * AudioBufferSourceNode. Going through a GainNode (rather than an <audio>
+ * element's `volume`) is what keeps it quiet on iOS, where `volume` is
+ * read-only. The "?" block sound is synthesised, so it needs no file.
  *
  * Browsers only allow audio after a user gesture (tap, click, key), so
  * nothing plays until `unlock()` runs from one. Scrolling is not a gesture.
  */
 
-const MUSIC_VOLUME = 0.05;
+const MUSIC_URL = '/audio/theme.mp3';
+const MUSIC_VOLUME = 0.12;
 const SFX_VOLUME = 0.14;
-const BPM = 132;
 const STORAGE_KEY = 'udit-sound';
 
-// Notes as semitones from A4 (440 Hz); null is a rest. Durations in beats.
-type Note = [number | null, number];
-
-const N = {
-  G3: -14, A3: -12, B3: -10, C4: -9, D4: -7, E4: -5, F4: -4, G4: -2,
-  A4: 0, B4: 2, C5: 3, D5: 5, E5: 7, F5: 8, G5: 10, A5: 12, C6: 15,
-} as const;
-
-// Original 8-bar melody, C major. Loops back to the top.
-const LEAD: Note[] = [
-  [N.E5, 0.5], [N.G5, 0.5], [N.C6, 1], [N.A5, 0.5], [N.G5, 0.5], [N.E5, 1],
-  [N.F5, 0.5], [N.A5, 0.5], [N.G5, 1], [N.E5, 0.5], [N.D5, 0.5], [N.C5, 1],
-  [N.D5, 0.5], [N.E5, 0.5], [N.F5, 0.5], [N.D5, 0.5], [N.G5, 1], [null, 1],
-  [N.E5, 0.5], [N.C5, 0.5], [N.D5, 0.5], [N.B4, 0.5], [N.C5, 1.5], [null, 0.5],
-  [N.C5, 0.5], [N.E5, 0.5], [N.G5, 0.5], [N.E5, 0.5], [N.A5, 1], [N.G5, 1],
-  [N.F5, 0.5], [N.E5, 0.5], [N.D5, 0.5], [N.F5, 0.5], [N.E5, 1], [N.C5, 1],
-  [N.A4, 0.5], [N.C5, 0.5], [N.D5, 0.5], [N.E5, 0.5], [N.D5, 1], [N.G4, 1],
-  [N.C5, 0.5], [N.D5, 0.5], [N.E5, 0.5], [N.D5, 0.5], [N.C5, 1.5], [null, 0.5],
-];
-
-// Bouncing root–fifth bass, one pattern per bar: C F G C / C F G C.
-const BASS_ROOTS = [N.C4, N.F4, N.G4, N.C4, N.A3, N.F4, N.G3, N.C4];
-const BASS: Note[] = BASS_ROOTS.flatMap((r) => [
-  [r - 12, 1], [r - 5, 1], [r - 12, 1], [r - 5, 1],
-] as Note[]);
+// Semitones from A4 (440 Hz), for the block sound.
+const N = { G4: -2, C5: 3, E5: 7, G5: 10, C6: 15 } as const;
 
 const freq = (semi: number) => 440 * 2 ** (semi / 12);
-const beat = 60 / BPM;
 
 let ctx: AudioContext | null = null;
 let musicBus: GainNode | null = null;
 let sfxBus: GainNode | null = null;
-let timer: ReturnType<typeof setInterval> | null = null;
-let loopStart = 0;
-let scheduledUntil = 0;
+let musicBuffer: AudioBuffer | null = null;
+let musicLoading: Promise<AudioBuffer | null> | null = null;
+let musicSource: AudioBufferSourceNode | null = null;
+let wantMusic = false;
 let enabled = readEnabled();
 const listeners = new Set<(on: boolean) => void>();
-
-const LOOP_BEATS = LEAD.reduce((s, [, d]) => s + d, 0);
 
 function readEnabled(): boolean {
   try {
@@ -80,6 +56,48 @@ function ensureContext(): AudioContext | null {
   return ctx;
 }
 
+/** Fetch and decode the track once. Resolves null if it can't be loaded. */
+function loadMusic(c: AudioContext): Promise<AudioBuffer | null> {
+  if (!musicLoading) {
+    musicLoading = fetch(MUSIC_URL)
+      .then((r) => {
+        if (!r.ok) throw new Error(`music ${r.status}`);
+        return r.arrayBuffer();
+      })
+      // Callback form: older Safari has no promise-returning decodeAudioData.
+      .then((data) => new Promise<AudioBuffer>((res, rej) => c.decodeAudioData(data, res, rej)))
+      .then((buf) => (musicBuffer = buf))
+      .catch(() => null);
+  }
+  return musicLoading;
+}
+
+function startMusic() {
+  const c = ctx;
+  if (!c || musicSource) return;
+  wantMusic = true;
+  if (!musicBuffer) {
+    // Start as soon as it's decoded, unless muted in the meantime.
+    void loadMusic(c).then((buf) => {
+      if (buf && wantMusic && enabled) startMusic();
+    });
+    return;
+  }
+  const src = c.createBufferSource();
+  src.buffer = musicBuffer;
+  src.loop = true;
+  src.connect(musicBus!);
+  src.start();
+  musicSource = src;
+}
+
+function stopMusic() {
+  wantMusic = false;
+  musicSource?.stop();
+  musicSource?.disconnect();
+  musicSource = null;
+}
+
 /** One enveloped oscillator note. */
 function tone(
   bus: GainNode,
@@ -103,49 +121,6 @@ function tone(
   osc.stop(start + dur);
 }
 
-function scheduleVoice(notes: Note[], type: OscillatorType, peak: number, from: number, to: number) {
-  const loopLen = LOOP_BEATS * beat;
-  let t = loopStart;
-  // Walk loops until we pass the window we're filling.
-  while (t < to) {
-    let offset = 0;
-    for (const [n, d] of notes) {
-      const at = t + offset * beat;
-      if (at >= from && at < to && n !== null) {
-        tone(musicBus!, type, freq(n), at, d * beat, peak);
-      }
-      offset += d;
-    }
-    t += loopLen;
-  }
-}
-
-// Lookahead scheduler: every 50ms, queue the next ~200ms of notes.
-function tick() {
-  if (!ctx) return;
-  const horizon = ctx.currentTime + 0.2;
-  if (scheduledUntil >= horizon) return;
-  scheduleVoice(LEAD, 'square', 0.9, scheduledUntil, horizon);
-  scheduleVoice(BASS, 'triangle', 1.6, scheduledUntil, horizon);
-  scheduledUntil = horizon;
-  // Keep loopStart close to now so the walk stays short.
-  const loopLen = LOOP_BEATS * beat;
-  while (loopStart + loopLen < ctx.currentTime) loopStart += loopLen;
-}
-
-function startMusic() {
-  if (!ctx || timer) return;
-  loopStart = ctx.currentTime + 0.05;
-  scheduledUntil = loopStart;
-  timer = setInterval(tick, 50);
-  tick();
-}
-
-function stopMusic() {
-  if (timer) clearInterval(timer);
-  timer = null;
-}
-
 /** Call from a user gesture. Starts the music if sound is on. */
 export function unlock() {
   const c = ensureContext();
@@ -154,11 +129,10 @@ export function unlock() {
   if (enabled) startMusic();
 }
 
-/** The "?" block: an original rising arpeggio with a bright finish. */
+/** The "?" block: a short thump, then a rising arpeggio. */
 export function playBlockSound() {
   if (!enabled || !ctx || ctx.state !== 'running') return;
   const t = ctx.currentTime;
-  // Short thump for the hit, then the item chime.
   const thump = ctx.createOscillator();
   const env = ctx.createGain();
   thump.type = 'square';

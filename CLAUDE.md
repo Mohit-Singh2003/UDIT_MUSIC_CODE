@@ -3,18 +3,18 @@
 # Diff vs upstream portfolio
 
 This repo is [Udit55Sharma/Udit_Sharma_Portfolio](https://github.com/Udit55Sharma/Udit_Sharma_Portfolio)
-plus one commit that adds sound and drops the mobile fallback.
+plus commits that add sound and drop the mobile fallback.
 
 | | Commit |
 |---|---|
 | Upstream `main` (base) | `7cfb83e` — "Update the tab title" |
-| This repo | `7cfb83e` + `02fa628` — "Add chiptune background music and block sound; show the game at every width" |
+| This repo | `7cfb83e` + this repo's own commits (`git log 7cfb83e..main`) |
 
 Full upstream history is kept; everything up to `7cfb83e` is identical.
 Reproduce the diff with:
 
 ```sh
-git diff 7cfb83e 02fa628
+git diff 7cfb83e main
 ```
 
 ## Summary
@@ -23,30 +23,32 @@ git diff 7cfb83e 02fa628
  app/page.tsx               |   5 +-
  components/GameWorld.tsx   |  18 ++--
  components/SoundToggle.tsx |  54 ++++++++++++   (new)
- lib/sound.ts               | 209 +++++++++++++   (new)
- 4 files changed, 276 insertions(+), 10 deletions(-)
+ lib/sound.ts               | ~180 ++++++++++++   (new)
+ public/audio/theme.mp3     | binary, 733 KB      (new)
 ```
 
-No other files differ: content, styles, assets, config and dependencies
+No other files differ: content, styles, other assets, config and dependencies
 (`package.json`, `package-lock.json`) are unchanged. No new packages.
 
 ## What changed
 
 ### 1. Sound (new)
 
-**`lib/sound.ts`** — all audio, synthesised with the Web Audio API. No audio
-files are shipped.
+**`lib/sound.ts`**: all audio, played through the Web Audio API.
 
-- **Background music:** an original 8-bar chiptune loop in C major, 132 BPM.
-  Square-wave lead over a triangle-wave root/fifth bass. It is *not* the
-  Super Mario theme or any other existing tune.
-- **Block sound:** an original short square-wave "thump" (220→90 Hz) followed
-  by a quick rising G–C–E–G–C arpeggio.
-- **Levels:** music gain `0.05` (kept low), effects gain `0.14`.
-- **Scheduling:** a lookahead scheduler queues about 200 ms of notes every
-  50 ms, so the loop is gapless and doesn't drift.
-- **Autoplay rules:** nothing plays until `unlock()` runs from a user
-  gesture (tap, click or key). Scrolling does not count as a gesture.
+- **Background music:** the MP3 at `public/audio/theme.mp3`, supplied by the
+  site owner. It is fetched and decoded once, then looped with an
+  `AudioBufferSourceNode`. To change the song, replace that file.
+  - **Licensing:** this track is third-party copyrighted music. Hosting it
+    publicly is the owner's call, and it may draw takedown requests.
+- **Block sound:** a synthesised square-wave "thump" (220→90 Hz) followed by a
+  quick rising G–C–E–G–C arpeggio. No file is needed.
+- **Levels:** music gain `0.12` (kept low), effects gain `0.14`. Volume goes
+  through `GainNode`s, not an `<audio>` element's `volume`, which is
+  read-only on iOS.
+- **Autoplay rules:** nothing plays until `unlock()` runs from a user gesture
+  (tap, click or key). Scrolling is not a gesture. The track downloads on that
+  first gesture, so music starts a moment later.
 - **Persistence:** the on/off choice is saved in `localStorage` under
   `udit-sound`. Storage failures, such as private mode, are ignored.
 - **Tab hidden:** the `AudioContext` is suspended while the tab is hidden and
@@ -87,7 +89,7 @@ button in the bottom-right, styled as a HUD plate.
 | | Upstream | This repo |
 |---|---|---|
 | Phone / narrow screen (<1024px) | Plain readable page (`MobileWorld`) | Side-scrolling game |
-| Audio | None | Quiet music after the first tap, plus a sound on each block's first hit |
+| Audio | None | Quiet looping theme music after the first tap, plus a sound on each block's first hit |
 | Extra UI | — | SOUND ON/OFF button, bottom-right |
 
 ## Known caveats
